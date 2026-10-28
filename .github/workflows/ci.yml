@@ -1,0 +1,147 @@
+# CI-конвейер для DataConverter (лабораторная работа №6)
+#
+# Что делает:
+#   1. Собирает проект и запускает тесты на Ubuntu, macOS и Windows (матрица).
+#   2. Кэширует папку сборки (в ней скачанные и собранные yaml-cpp и GoogleTest),
+#      ключ кэша зависит от ОС и от файлов проекта.
+#   3. Сохраняет артефакты: отчёт тестов (JUnit XML), журнал тестов и собранную программу.
+#   4. Отдельное задание summary запускается только после всех сборок (needs)
+#      и собирает итоговую таблицу по всем ОС.
+
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:      # ручной запуск из вкладки Actions (для замеров времени)
+
+jobs:
+  build-and-test:
+    name: Build & test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      # Часть 4: false — остальные ОС доработают, даже если одна упала;
+      #          true  — при первой ошибке GitHub отменит остальные задания.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    env:
+      BUILD_TYPE: Release
+
+    defaults:
+      run:
+        shell: bash       # одинаковые команды на всех трёх ОС
+
+    steps:
+      - name: Получение кода
+        uses: actions/checkout@v4
+
+      - name: Настройка окружения (версии инструментов)
+        run: |
+          echo "OS: ${{ runner.os }}"
+          cmake --version
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            echo "Компилятор: MSVC (Visual Studio)"
+          else
+            c++ --version
+          fi
+
+      # Часть 5: кэш папки build. Внутри лежат скачанные и уже собранные
+      # зависимости (build/_deps). Ключ = ОС + хэш CMakeLists.txt + хэш исходников.
+      # Если исходники поменялись, сработает restore-keys: восстановится
+      # кэш с теми же зависимостями, и пересоберутся только файлы проекта.
+      - name: Кэш сборки
+        id: cache-build
+        uses: actions/cache@v4
+        with:
+          path: build
+          key: build-${{ runner.os }}-${{ hashFiles('CMakeLists.txt') }}-${{ hashFiles('src/**', 'tests/**') }}
+          restore-keys: |
+            build-${{ runner.os }}-${{ hashFiles('CMakeLists.txt') }}-
+
+      - name: Результат кэша
+        run: |
+          echo "Точное попадание в кэш: ${{ steps.cache-build.outputs.cache-hit == 'true' }}"
+
+      # Зависимости (yaml-cpp, GoogleTest) скачиваются здесь через CMake FetchContent.
+      - name: Установка зависимостей и конфигурация CMake
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=$BUILD_TYPE -DDATACONV_BUILD_TESTS=ON
+
+      - name: Сборка
+        run: cmake --build build --config $BUILD_TYPE --parallel 4
+
+      # Если хоть один тест упадёт, ctest вернёт ненулевой код
+      # и весь шаг (а значит, и задание) завершится с ошибкой.
+      - name: Запуск тестов
+        working-directory: build
+        run: |
+          ctest -C $BUILD_TYPE --output-on-failure \
+                --output-junit test-results.xml 2>&1 | tee test-log.txt
+
+      - name: Проверка программы на примере
+        run: |
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            EXE=build/$BUILD_TYPE/dataconv.exe
+          else
+            EXE=build/dataconv
+          fi
+          "$EXE" examples/people.csv build/people-converted.yaml
+          cat build/people-converted.yaml
+
+      # Часть 6: артефакты. if: always() — сохраняем отчёт и при упавших тестах.
+      - name: Сохранение отчёта о тестах
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-report-${{ matrix.os }}
+          path: |
+            build/test-results.xml
+            build/test-log.txt
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Сохранение собранной программы
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dataconv-${{ matrix.os }}
+          path: |
+            build/dataconv
+            build/${{ env.BUILD_TYPE }}/dataconv.exe
+            build/people-converted.yaml
+          if-no-files-found: warn
+          retention-days: 14
+
+  # Зависимость между заданиями: summary ждёт окончания всех сборок.
+  summary:
+    name: Итоговый отчёт
+    needs: build-and-test
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Скачать отчёты тестов
+        uses: actions/download-artifact@v4
+        with:
+          pattern: test-report-*
+          path: reports
+
+      - name: Сводка по ОС
+        run: |
+          {
+            echo "## Результаты тестов DataConverter"
+            echo ""
+            echo "Итог матрицы: **${{ needs.build-and-test.result }}**"
+            echo ""
+            echo "| ОС | Тестов | Ошибок | Падений |"
+            echo "|---|---|---|---|"
+            for f in reports/*/test-results.xml; do
+              [ -f "$f" ] || continue
+              os=$(basename "$(dirname "$f")" | sed 's/^test-report-//')
+              tests=$(grep -o 'tests="[0-9]*"' "$f" | head -1 | tr -dc 0-9)
+              fails=$(grep -o 'failures="[0-9]*"' "$f" | head -1 | tr -dc 0-9)
+              errs=$(grep -o 'errors="[0-9]*"' "$f" | head -1 | tr -dc 0-9)
+              echo "| $os | ${tests:-?} | ${errs:-0} | ${fails:-0} |"
+            done
+          } | tee -a "$GITHUB_STEP_SUMMARY"
