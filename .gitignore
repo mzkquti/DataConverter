@@ -7,3 +7,6 @@ vcpkg_installed/
 *.yaml.tmp
 *.yml.tmp
 .DS_Store
+push_to_github.bat
+commit_and_push.bat
+commit_msg.txt

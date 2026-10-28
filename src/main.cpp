@@ -1,3 +1,4 @@
+// DataConverter CLI: dataconv <input_file> <output_file>
 #include "converter.hpp"
 
 #include <exception>
