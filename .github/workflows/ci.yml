@@ -23,7 +23,7 @@ jobs:
     strategy:
       # Часть 4: false — остальные ОС доработают, даже если одна упала;
       #          true  — при первой ошибке GitHub отменит остальные задания.
-      fail-fast: true
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
 
