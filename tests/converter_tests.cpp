@@ -72,3 +72,13 @@ TEST(Converter, EmptyCsvProducesEmptyArray) {
     EXPECT_TRUE(result.is_array());
     EXPECT_TRUE(result.empty());
 }
+
+// Part 4 (fail-fast experiment): this test is broken on purpose, only on Linux,
+// so that one job of the matrix fails while the others keep running.
+TEST(Converter, IntentionallyBrokenOnLinux) {
+#ifdef __linux__
+    EXPECT_EQ(convert_text("name\nEva\n", "csv", "json"), "broken on purpose");
+#else
+    SUCCEED();
+#endif
+}
